@@ -27,7 +27,7 @@ Clone into your `custom_nodes` directory:
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
-git clone git@github.com:billyhotdog/comfyui-llm-prompt.git
+git clone git@github.com:rlemson7/comfyui-llm-prompt.git
 ```
 
 Install dependencies into your ComfyUI Python environment:
