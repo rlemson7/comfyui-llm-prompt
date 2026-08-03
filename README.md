@@ -18,7 +18,8 @@ The generated text is shown inline inside the node *and* returned as a `STRING` 
 - Optional audio description (ambient sound, music, dialogue in quotation marks, language/accent) for video modes.
 - Optional `clip_length` (seconds) — tells the LLM how long the clip is so it scales the action to fit (no film scripts in a 5-second clip). In `video_minimax` mode it also bounds the shot timestamps and fills in the last-frame alignment timestamp. `0` = unspecified.
 - Optional image input — when connected in a video mode, the node prompts the LLM to focus on what happens *next*, not re-describe the static frame.
-- Optional second image input (`image_last`, `video_minimax` only) for keyframe tasks:
+- `image_as_keyframe` toggle — on (default), connected images are treated as real keyframes the video model will also receive. Off, they only *inspire* the LLM: the prompt comes out fully self-contained for a pure text-to-video run — no alignment header, no "Picture 1" references, everything described in words.
+- Optional second image input (`image_last`, `video_minimax` only) for keyframe tasks (with `image_as_keyframe` on):
 
   | Connected | MiniMax task |
   | --------- | ------------ |
@@ -74,6 +75,7 @@ Set your OpenRouter API key either:
 | `mode`          | dropdown | `image`, `video`, `video_ltx2.3` (default), `video_minimax` |
 | `include_audio` | BOOLEAN | Adds an audio description section in video modes. Ignored when `mode = image`. In `video_minimax` mode, off means a silent clip (`overall_soundscape` / `non_diegetic_music` become `N/A`). |
 | `clip_length`   | FLOAT   | Clip duration in seconds for video modes. The LLM is told to scale the action to this length. `0` (default) = unspecified. |
+| `image_as_keyframe` | BOOLEAN | On (default): connected images are keyframes the video model also receives. Off: images only inform the LLM; the prompt is self-contained text-to-video with no reference to attached pictures. |
 | `model`         | dropdown | OpenRouter model id. Default `google/gemini-3.1-flash-lite`. Edit `MODELS` in `__init__.py` to add more. |
 | `instructions`  | STRING  | Extra guidance ("make it cinematic", "slow dolly-in"). Required if no image is connected. |
 | `api_key`       | STRING  | Leave empty to use the `.env` fallback. |

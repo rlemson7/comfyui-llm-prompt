@@ -140,6 +140,22 @@ SYSTEM_MINIMAX_NO_AUDIO = (
     "overall_soundscape and non_diegetic_music."
 )
 
+# Used when the image only informs the LLM and is NOT fed to the video model.
+SYSTEM_MINIMAX_IMG_REFERENCE_ONLY = (
+    "\nThe attached image(s) are visual reference for YOU only — the video "
+    "model will NOT receive them. Write a fully self-contained text-to-video "
+    "prompt: describe the style, subjects, clothing, colors, and scene "
+    "completely in words. Do NOT include an image alignment line, and do NOT "
+    "mention Picture 1, reference pictures, or the attached image in any way."
+)
+
+SYSTEM_IMG_REFERENCE_ONLY = (
+    "\nThe attached image is visual reference for YOU only — the video model "
+    "will NOT receive it. Write a fully self-contained prompt: describe the "
+    "subjects, style, and scene completely in words, and do not mention the "
+    "image or assume the video model can see it."
+)
+
 
 def _minimax_task_suffix(has_first: bool, has_last: bool, clip_length: float) -> str:
     """Image-alignment instructions for the MiniMax keyframe tasks.
@@ -236,6 +252,7 @@ def _build_system_prompt(
     has_first: bool,
     has_last: bool,
     clip_length: float,
+    image_as_keyframe: bool,
 ) -> str:
     if mode == "image":
         return SYSTEM_IMAGE
@@ -243,7 +260,13 @@ def _build_system_prompt(
         parts = [SYSTEM_VIDEO_MINIMAX]
         if not include_audio:
             parts.append(SYSTEM_MINIMAX_NO_AUDIO)
-        parts.append(_minimax_task_suffix(has_first, has_last, clip_length))
+        if has_first or has_last:
+            if image_as_keyframe:
+                parts.append(
+                    _minimax_task_suffix(has_first, has_last, clip_length)
+                )
+            else:
+                parts.append(SYSTEM_MINIMAX_IMG_REFERENCE_ONLY)
         parts.append(_clip_length_suffix(mode, clip_length))
         return "".join(parts)
     if mode == "video_ltx2.3":
@@ -255,7 +278,9 @@ def _build_system_prompt(
             SYSTEM_VIDEO_LTX_AUDIO if mode == "video_ltx2.3" else SYSTEM_VIDEO_AUDIO
         )
     if has_first or has_last:
-        parts.append(SYSTEM_IMG2VID_SUFFIX)
+        parts.append(
+            SYSTEM_IMG2VID_SUFFIX if image_as_keyframe else SYSTEM_IMG_REFERENCE_ONLY
+        )
     parts.append(_clip_length_suffix(mode, clip_length))
     return "".join(parts)
 
@@ -353,6 +378,20 @@ class LLMPromptGenerator:
                         ),
                     },
                 ),
+                "image_as_keyframe": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "On: connected image(s) are real keyframes the video "
+                            "model will also receive (alignment header / "
+                            "starting-frame wording). Off: image(s) only inspire "
+                            "the LLM — the prompt is written fully self-contained "
+                            "for a pure text-to-video run, with no reference to "
+                            "attached pictures."
+                        ),
+                    },
+                ),
                 "model": (MODELS, {"default": "google/gemini-3.1-flash-lite"}),
                 "instructions": (
                     "STRING",
@@ -415,6 +454,7 @@ class LLMPromptGenerator:
         mode: str,
         include_audio: bool,
         clip_length: float,
+        image_as_keyframe: bool,
         model: str,
         instructions: str,
         api_key: str,
@@ -441,7 +481,7 @@ class LLMPromptGenerator:
         has_first = image is not None
         has_last = image_last is not None
         system_prompt = _build_system_prompt(
-            mode, include_audio, has_first, has_last, clip_length
+            mode, include_audio, has_first, has_last, clip_length, image_as_keyframe
         )
 
         # Order matters: Picture 1 first. For last-frame-only (L2VA), the last
@@ -451,6 +491,11 @@ class LLMPromptGenerator:
             if mode == "image":
                 default_user_text = (
                     "Describe this image as a still scene per the system instructions."
+                )
+            elif not image_as_keyframe:
+                default_user_text = (
+                    "Write the prompt per the system instructions. The attached "
+                    "image(s) show the desired subject and style."
                 )
             elif mode == "video_minimax":
                 default_user_text = (
