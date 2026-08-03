@@ -23,7 +23,7 @@ ENV_FILE = COMFYUI_ROOT / ".env"
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-MODES = ["image", "video", "video_ltx2.3"]
+MODES = ["image", "video", "video_ltx2.3", "video_minimax"]
 
 # ---------- System prompts -----------------------------------------------
 
@@ -86,6 +86,142 @@ SYSTEM_VIDEO_AUDIO = (
     "dialogue in quotation marks."
 )
 
+# Derived from the MiniMax H3 video prompt writing guide
+# (huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md).
+SYSTEM_VIDEO_MINIMAX = (
+    "You are a prompt engineer for the MiniMax H3 video+audio generation "
+    "model. Produce ONE prompt consisting of exactly three labeled fields, in "
+    "this order, each starting on its own line:\n"
+    "integrated_multimodal_description: the full audiovisual timeline of the "
+    "clip, shot by shot — visuals, actions, camera work, shot transitions, "
+    "dialogue, singing, and diegetic audio events in the order they occur.\n"
+    "overall_soundscape: 1-4 sentences summarizing ambient sound, physical "
+    "action sounds, and non-verbal human sounds (wind, rain, traffic, "
+    "footsteps, fabric, impacts, breathing, laughter). No dialogue or singing "
+    "here. Write N/A only if complete silence is requested.\n"
+    "non_diegetic_music: 1-3 sentences describing background music the "
+    "characters cannot hear: instrumentation, tempo, rhythm, dynamic changes. "
+    "No abstract mood words and no explanation of the score's emotional "
+    "function. Write N/A if there is no music.\n"
+    "Rules for integrated_multimodal_description:\n"
+    "  - Open [Shot 1] by stating the overall style and initial composition, "
+    "e.g. \"[Shot 1] Live-action, cinematic, a medium-wide shot frames...\". "
+    "Common styles: live-action, cinematic, 2D-animated, 3D CG, claymation, "
+    "watercolor.\n"
+    "  - The first shot carries no timestamp. Each later shot starts "
+    "\"[Shot N] At MM:SS.SSS, the camera cuts to...\". Use \"the camera cuts "
+    "to\" / \"the shot transitions to\" / \"the shot switches to\"; reserve "
+    "cross-dissolve, fade, or wipe for explicit user requests.\n"
+    "  - Write camera motion as natural prose combining three dimensions: "
+    "motion type (push in/out, zoom in/out, pan left/right, truck left/right, "
+    "tilt up/down, pedestal up/down, arc shot, tracking shot, static shot, "
+    "slight/strong shake, POV, roll clockwise/counterclockwise), amplitude "
+    "(with small/large amplitude), and speed (at slow/fast speed) — e.g. "
+    "\"The camera pushes in with small amplitude at slow speed toward the "
+    "folded letter.\"\n"
+    "  - Give each speaking or singing character a stable ID: (S1), (S2); "
+    "(S1,S2) when they vocalize together. Keep the same ID across shots; "
+    "non-vocalizing characters get no ID.\n"
+    "  - Dialogue format: speaker, action, and delivery outside the tag; only "
+    "a language tag and the exact words inside it, e.g. the young woman with "
+    "a quiet, breathy voice (S1) says: <d>[English] I get off at the next "
+    "station.</d> Keep user-provided lines and punctuation verbatim. For "
+    "voiceover write \"says in an off-screen voiceover\" and state that the "
+    "on-screen character's lips remain completely closed.\n"
+    "  - Put visible on-screen text (signs, banners, labels, subtitles, neon) "
+    "in English double quotation marks, verbatim, untranslated.\n"
+    "Output ONLY the prompt in exactly this structure, as plain text. No "
+    "preamble, no surrounding quotes, no markdown, no commentary."
+)
+
+SYSTEM_MINIMAX_NO_AUDIO = (
+    "\nThe user wants a silent clip: include no dialogue, singing, or "
+    "diegetic audio events in the description, and write N/A for both "
+    "overall_soundscape and non_diegetic_music."
+)
+
+
+def _minimax_task_suffix(has_first: bool, has_last: bool, clip_length: float) -> str:
+    """Image-alignment instructions for the MiniMax keyframe tasks.
+
+    T2VA (no images) needs no alignment line, hence the empty string.
+    """
+    if clip_length > 0:
+        end_ts = f"{clip_length:.2f}"
+        end_note = ""
+    else:
+        end_ts = "S.SS"
+        end_note = (
+            " (replace S.SS with a plausible clip duration in seconds, two "
+            "decimal places)"
+        )
+
+    if has_first and has_last:
+        return (
+            "\nTwo reference images are attached: the FIRST is the first frame "
+            "of the clip (Picture 1), the SECOND is the last frame (Picture 2). "
+            "Begin the prompt with this alignment line, followed by one blank "
+            "line, then the three fields:\n"
+            "How the reference pictures align with the target video — Picture 1 "
+            "(from Shot 1) aligns with the 0.00-second mark of the target "
+            "video; Picture 2 (from Shot N) aligns with the "
+            f"{end_ts}-second mark of the target video.{end_note}\n"
+            "Keep the whole clip a single continuous shot so the model can "
+            "interpolate from the first frame to the last, unless the user "
+            "explicitly asks for multiple shots. Describe: the first-frame "
+            "state, the observable intermediate changes (movement, pose, "
+            "object manipulation, composition), the progressively narrowing "
+            "differences, and finally the last-frame state."
+        )
+    if has_first:
+        return (
+            "\nThe attached image is the first frame of the clip (Picture 1). "
+            "Begin the prompt with exactly this line, followed by one blank "
+            "line, then the three fields:\n"
+            "For the target video, at 0.00 seconds into the target video, "
+            "<Picture 1> (from [Shot 1]) is fully referenced.\n"
+            "Anchor style, subjects, composition, and scene from the image — "
+            "keep character identity, clothing, colors, key objects, and "
+            "spatial relationships consistent — then describe what happens "
+            "next: action onset, continuous development, result or reaction. "
+            "Do not merely re-describe the static image."
+        )
+    if has_last:
+        return (
+            "\nThe attached image is the LAST frame of the clip (Picture 1). "
+            "Begin the prompt with this alignment line, followed by one blank "
+            "line, then the three fields:\n"
+            "How the reference pictures align with the target video — "
+            "<Picture 1> (from [Shot N]) aligns with the "
+            f"{end_ts}-second mark of the target video.{end_note}\n"
+            "Infer a plausible earlier state from the user's intent and the "
+            "last frame, then describe how the characters, objects, camera, "
+            "and scene gradually approach the reference image: preceding "
+            "state, explicit action and transition path, gradual convergence, "
+            "and the final landing on the last frame."
+        )
+    return ""
+
+
+def _clip_length_suffix(mode: str, clip_length: float) -> str:
+    """Tell the LLM how long the clip is so it scales the action to fit."""
+    if clip_length <= 0 or mode == "image":
+        return ""
+    n = f"{clip_length:g}"
+    s = (
+        f"\nThe target clip is exactly {n} seconds long. Scale the content to "
+        f"that duration: include only as much action as can plausibly unfold "
+        f"in {n} seconds. Do not compress a whole storyline into a short "
+        "clip — prefer one continuous action or a few clear beats that fit "
+        "comfortably."
+    )
+    if mode == "video_minimax":
+        s += (
+            f" All shot timestamps must fall between 00:00.000 and the clip "
+            f"end at {n} seconds."
+        )
+    return s
+
 # Extra guidance appended when an image is provided in a video mode (image-to-video).
 SYSTEM_IMG2VID_SUFFIX = (
     "\nThe attached image is the starting frame. Focus on the motion and action "
@@ -94,22 +230,33 @@ SYSTEM_IMG2VID_SUFFIX = (
 )
 
 
-def _build_system_prompt(mode: str, include_audio: bool, has_image: bool) -> str:
+def _build_system_prompt(
+    mode: str,
+    include_audio: bool,
+    has_first: bool,
+    has_last: bool,
+    clip_length: float,
+) -> str:
     if mode == "image":
         return SYSTEM_IMAGE
+    if mode == "video_minimax":
+        parts = [SYSTEM_VIDEO_MINIMAX]
+        if not include_audio:
+            parts.append(SYSTEM_MINIMAX_NO_AUDIO)
+        parts.append(_minimax_task_suffix(has_first, has_last, clip_length))
+        parts.append(_clip_length_suffix(mode, clip_length))
+        return "".join(parts)
     if mode == "video_ltx2.3":
         parts = [SYSTEM_VIDEO_LTX]
-        if include_audio:
-            parts.append(SYSTEM_VIDEO_LTX_AUDIO)
-        if has_image:
-            parts.append(SYSTEM_IMG2VID_SUFFIX)
-        return "".join(parts)
-    # generic video
-    parts = [SYSTEM_VIDEO]
+    else:  # generic video
+        parts = [SYSTEM_VIDEO]
     if include_audio:
-        parts.append(SYSTEM_VIDEO_AUDIO)
-    if has_image:
+        parts.append(
+            SYSTEM_VIDEO_LTX_AUDIO if mode == "video_ltx2.3" else SYSTEM_VIDEO_AUDIO
+        )
+    if has_first or has_last:
         parts.append(SYSTEM_IMG2VID_SUFFIX)
+    parts.append(_clip_length_suffix(mode, clip_length))
     return "".join(parts)
 
 
@@ -175,7 +322,9 @@ class LLMPromptGenerator:
                         "tooltip": (
                             "image: still description, no motion. "
                             "video: generic text-to-video prompt. "
-                            "video_ltx2.3: follows the LTX-2.3 prompt guide."
+                            "video_ltx2.3: follows the LTX-2.3 prompt guide. "
+                            "video_minimax: follows the MiniMax H3 prompt guide "
+                            "(supports first/last reference frames)."
                         ),
                     },
                 ),
@@ -183,7 +332,25 @@ class LLMPromptGenerator:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Append an audio description (ambient, music, dialogue). Ignored in image mode.",
+                        "tooltip": (
+                            "Append an audio description (ambient, music, dialogue). "
+                            "Ignored in image mode. In video_minimax mode, off = "
+                            "silent clip (soundscape/music fields become N/A)."
+                        ),
+                    },
+                ),
+                "clip_length": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 600.0,
+                        "step": 0.5,
+                        "tooltip": (
+                            "Clip duration in seconds (video modes only). Tells the "
+                            "LLM how much action fits — no film scripts in a 5 s "
+                            "clip. 0 = unspecified."
+                        ),
                     },
                 ),
                 "model": (MODELS, {"default": "google/gemini-3.1-flash-lite"}),
@@ -211,7 +378,25 @@ class LLMPromptGenerator:
                 ),
             },
             "optional": {
-                "image": ("IMAGE",),
+                "image": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "Reference image. In video_minimax mode this is the "
+                            "FIRST frame of the clip."
+                        ),
+                    },
+                ),
+                "image_last": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "video_minimax only: LAST frame of the clip. Combine "
+                            "with 'image' for first+last-frame interpolation, or "
+                            "connect alone to converge toward this frame."
+                        ),
+                    },
+                ),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -229,12 +414,14 @@ class LLMPromptGenerator:
         self,
         mode: str,
         include_audio: bool,
+        clip_length: float,
         model: str,
         instructions: str,
         api_key: str,
         max_tokens: int,
         temperature: float,
         image=None,
+        image_last=None,
         unique_id=None,
         extra_pnginfo=None,
     ):
@@ -245,24 +432,45 @@ class LLMPromptGenerator:
                 f"OPENROUTER_API_KEY in {ENV_FILE}"
             )
 
-        has_image = image is not None
-        system_prompt = _build_system_prompt(mode, include_audio, has_image)
-
-        if has_image:
-            b64 = _tensor_to_base64_png(image)
-            default_user_text = (
-                "Describe this image as a still scene per the system instructions."
-                if mode == "image"
-                else "Write the prompt per the system instructions, starting from this image."
+        if image_last is not None and mode != "video_minimax":
+            logger.warning(
+                "image_last is only used in video_minimax mode; ignoring it."
             )
+            image_last = None
+
+        has_first = image is not None
+        has_last = image_last is not None
+        system_prompt = _build_system_prompt(
+            mode, include_audio, has_first, has_last, clip_length
+        )
+
+        # Order matters: Picture 1 first. For last-frame-only (L2VA), the last
+        # frame IS Picture 1.
+        images = [img for img in (image, image_last) if img is not None]
+        if images:
+            if mode == "image":
+                default_user_text = (
+                    "Describe this image as a still scene per the system instructions."
+                )
+            elif mode == "video_minimax":
+                default_user_text = (
+                    "Write the prompt per the system instructions, using the "
+                    "attached reference frame(s)."
+                )
+            else:
+                default_user_text = (
+                    "Write the prompt per the system instructions, starting from this image."
+                )
             text = instructions.strip() or default_user_text
-            user_content = [
-                {"type": "text", "text": text},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                },
-            ]
+            user_content = [{"type": "text", "text": text}]
+            for img in images:
+                b64 = _tensor_to_base64_png(img)
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    }
+                )
         else:
             if not instructions.strip():
                 raise ValueError(
@@ -281,7 +489,8 @@ class LLMPromptGenerator:
         }
 
         logger.info(
-            f"OpenRouter request: model={model} mode={mode} audio={include_audio} image={has_image}"
+            f"OpenRouter request: model={model} mode={mode} audio={include_audio} "
+            f"images={len(images)} clip_length={clip_length}"
         )
         resp = requests.post(
             OPENROUTER_URL,
